@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<title>TMT 데일리 브리핑</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #0d1117; color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Helvetica Neue", sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  }
+  .gate { width: 100%; max-width: 360px; text-align: center; }
+  .logo { font-size: 34px; line-height: 1; margin-bottom: 18px; }
+  h1 { font-size: 19px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.2px; }
+  .sub { font-size: 13px; color: #8b949e; margin: 0 0 26px; line-height: 1.5; }
+  form { display: flex; flex-direction: column; gap: 10px; }
+  input[type=password] {
+    width: 100%; padding: 14px 15px; font-size: 16px;
+    border-radius: 11px; border: 1px solid #30363d; background: #161b22; color: #e6edf3;
+    outline: none; -webkit-appearance: none;
+  }
+  input[type=password]:focus { border-color: #2f81f7; box-shadow: 0 0 0 3px rgba(47,129,247,.18); }
+  button {
+    width: 100%; padding: 14px; font-size: 16px; font-weight: 600;
+    border-radius: 11px; border: 0; background: #238636; color: #fff;
+    cursor: pointer; -webkit-appearance: none;
+  }
+  button:disabled { opacity: .6; cursor: default; }
+  .remember { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 12.5px; color: #8b949e; margin-top: 4px; }
+  .remember input { width: 15px; height: 15px; accent-color: #238636; }
+  .msg { min-height: 20px; font-size: 13px; margin-top: 14px; line-height: 1.45; }
+  .msg.err { color: #f85149; }
+  .msg.info { color: #8b949e; }
+  #view { position: fixed; inset: 0; display: none; background: #fff; }
+  #frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
+  #lock {
+    position: fixed; right: 12px; bottom: max(12px, env(safe-area-inset-bottom));
+    width: 44px; height: 44px; padding: 0; border-radius: 50%;
+    background: rgba(13,17,23,.82); color: #e6edf3; font-size: 17px; font-weight: 400;
+    display: none; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,.35); backdrop-filter: blur(6px);
+  }
+  #lock.show { display: flex; }
+  .spin {
+    display: inline-block; width: 14px; height: 14px; margin-right: 7px; vertical-align: -2px;
+    border: 2px solid #30363d; border-top-color: #2f81f7; border-radius: 50%;
+    animation: sp .8s linear infinite;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="gate" id="gate">
+  <div class="logo">📈</div>
+  <h1>TMT 데일리 브리핑</h1>
+  <p class="sub">비밀번호를 입력하면 최신 대시보드가 열립니다.</p>
+  <form id="f" autocomplete="off">
+    <input id="pw" type="password" inputmode="text" autocomplete="current-password"
+           placeholder="비밀번호" aria-label="비밀번호" autocapitalize="off" spellcheck="false">
+    <button id="go" type="submit">열기</button>
+    <label class="remember"><input id="rm" type="checkbox"> 이 기기에서 기억하기</label>
+  </form>
+  <div class="msg info" id="msg"></div>
+</div>
+<div id="view"><iframe id="frame" title="TMT 대시보드" referrerpolicy="no-referrer"
+  sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-forms"></iframe></div>
+<button id="lock" type="button" aria-label="잠그기">🔒</button>
+
+<script>
+(function () {
+  "use strict";
+  // ---- 배포 시 build 스크립트가 채우는 값 ----
+  var META = {"v": "eaa3ba429e", "iter": 600000, "salt": "WE3dozEAcnZAByraQU++5w==", "iv": "k2jpmC3gxWENa4XR", "data": "data/dashboard.bin?v=eaa3ba429e", "built": "2026-11-28 07:38:50", "bytes": 7091582};
+  // ------------------------------------------
+
+  var gate = document.getElementById("gate");
+  var view = document.getElementById("view");
+  var frame = document.getElementById("frame");
+  var lockBtn = document.getElementById("lock");
+  var form = document.getElementById("f");
+  var pw = document.getElementById("pw");
+  var go = document.getElementById("go");
+  var rm = document.getElementById("rm");
+  var msg = document.getElementById("msg");
+
+  var KEY_STORE = "tmt-pw-v1";
+  var blobUrl = null;
+
+  function say(text, cls) {
+    msg.className = "msg " + (cls || "info");
+    msg.innerHTML = text;
+  }
+
+  function b64(s) {
+    var bin = atob(s), out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+
+  function deriveKey(password) {
+    var enc = new TextEncoder();
+    var salt = b64(META.salt);
+    return crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"])
+      .then(function (base) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: salt, iterations: META.iter, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      });
+  }
+
+  function unlock(password) {
+    go.disabled = true;
+    say('<span class="spin"></span>여는 중…', "info");
+    var cipher;
+    return fetch(META.data, { cache: "no-cache", credentials: "omit" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("데이터를 불러오지 못했습니다 (" + r.status + ")");
+        return r.arrayBuffer();
+      })
+      .then(function (buf) { cipher = new Uint8Array(buf); return deriveKey(password); })
+      .then(function (key) {
+        return crypto.subtle.decrypt({ name: "AES-GCM", iv: b64(META.iv) }, key, cipher);
+      })
+      .then(function (plain) {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        blobUrl = URL.createObjectURL(new Blob([plain], { type: "text/html;charset=utf-8" }));
+        frame.src = blobUrl;
+        gate.style.display = "none";
+        view.style.display = "block";
+        lockBtn.classList.add("show");
+        if (rm.checked) { try { localStorage.setItem(KEY_STORE, password); } catch (e) {} }
+        else { try { localStorage.removeItem(KEY_STORE); } catch (e) {} }
+        say("", "info");
+      })
+      .catch(function (e) {
+        if (e && (e.name === "OperationError" || e.name === "DataError")) {
+          say("비밀번호가 맞지 않습니다. 다시 확인해 주세요.", "err");
+          try { localStorage.removeItem(KEY_STORE); } catch (x) {}
+        } else if (e && e.name === "NotSupportedError") {
+          say("이 브라우저에서는 열 수 없습니다. 최신 브라우저로 열어 주세요.", "err");
+        } else {
+          say((e && e.message) ? e.message : "여는 중 문제가 생겼습니다.", "err");
+        }
+      })
+      .then(function () { go.disabled = false; pw.value = ""; });
+  }
+
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var v = pw.value;
+    if (!v) { say("비밀번호를 입력해 주세요.", "err"); pw.focus(); return; }
+    unlock(v);
+  });
+
+  lockBtn.addEventListener("click", function () {
+    frame.src = "about:blank";
+    view.style.display = "none";
+    lockBtn.classList.remove("show");
+    gate.style.display = "block";
+    say("잠갔습니다.", "info");
+    pw.focus();
+  });
+
+  if (!window.crypto || !crypto.subtle) {
+    say("이 브라우저는 암호화된 페이지를 지원하지 않습니다. 최신 Safari·Chrome에서 열어 주세요.", "err");
+    go.disabled = true;
+    return;
+  }
+
+  var saved = null;
+  try { saved = localStorage.getItem(KEY_STORE); } catch (e) {}
+  if (saved) {
+    rm.checked = true;
+    pw.value = saved;
+    unlock(saved);
+  } else {
+    pw.focus();
+  }
+})();
+</script>
+</body>
+</html>
